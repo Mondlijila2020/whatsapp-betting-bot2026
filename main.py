@@ -1,16 +1,22 @@
+import os
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import requests, random, math, json
 from datetime import datetime, timedelta
+from time import time
 
 app = Flask(__name__)
 
 # ------------------------------
 # CONFIG
 # ------------------------------
-VOUCHER_FILE = "vouchers.json"
+VOUCHER_FILE = os.path.join(os.getcwd(), "vouchers.json")
 approved_users = {}
-ADMIN_NUMBER = "whatsapp:+27671502312"  # Replace with your WhatsApp number
+
+# Environment variables (set on Render)
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")  # d011b6d8d9mshdad193e8e30d8b0p13c504jsnf3f2e88fddd7
+RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST")  # flashscore4.p.rapidapi.com
+ADMIN_NUMBER = os.environ.get("ADMIN_NUMBER")  # whatsapp:+27671502312
 
 # ------------------------------
 # TEAM DATABASE
@@ -50,7 +56,7 @@ def save_vouchers(vouchers):
 
 def generate_code():
     import string
-    return "EPL-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return "UMK-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 def create_voucher():
     vouchers = load_vouchers()
@@ -78,22 +84,21 @@ def validate_voucher(user, code):
 # LEAGUE DETECTION
 # ------------------------------
 def detect_league(team1, team2):
-    team1_lower = team1.lower()
-    team2_lower = team2.lower()
-    if team1_lower in ["arsenal","liverpool","chelsea","man city","man united"] or \
-       team2_lower in ["arsenal","liverpool","chelsea","man city","man united"]:
+    t1, t2 = team1.lower(), team2.lower()
+    if t1 in ["arsenal","liverpool","chelsea","man city","man united"] or \
+       t2 in ["arsenal","liverpool","chelsea","man city","man united"]:
         return "epl"
-    elif team1_lower in ["real madrid","barcelona","atletico madrid"] or \
-         team2_lower in ["real madrid","barcelona","atletico madrid"]:
+    elif t1 in ["real madrid","barcelona","atletico madrid"] or \
+         t2 in ["real madrid","barcelona","atletico madrid"]:
         return "la liga"
-    elif team1_lower in ["juventus","inter","ac milan"] or \
-         team2_lower in ["juventus","inter","ac milan"]:
+    elif t1 in ["juventus","inter","ac milan"] or \
+         t2 in ["juventus","inter","ac milan"]:
         return "serie a"
-    elif team1_lower in ["bayern","dortmund","leipzig"] or \
-         team2_lower in ["bayern","dortmund","leipzig"]:
+    elif t1 in ["bayern","dortmund","leipzig"] or \
+         t2 in ["bayern","dortmund","leipzig"]:
         return "bundesliga"
-    elif team1_lower in ["sundowns","pirates","chiefs","stellies"] or \
-         team2_lower in ["sundowns","pirates","chiefs","stellies"]:
+    elif t1 in ["sundowns","pirates","chiefs","stellies"] or \
+         t2 in ["sundowns","pirates","chiefs","stellies"]:
         return "psl"
     else:
         return "epl"
@@ -111,21 +116,16 @@ def poisson(lmbda):
     return k - 1
 
 # ------------------------------
-# MATCH PREDICTION FUNCTION
+# MATCH PREDICTION
 # ------------------------------
 def predict_match(team1, team2, high_prob=False):
-    team1_lower = team1.lower()
-    team2_lower = team2.lower()
-    s1 = teams.get(team1_lower, 75)
-    s2 = teams.get(team2_lower, 75)
-
+    s1, s2 = teams.get(team1.lower(), 75), teams.get(team2.lower(), 75)
     league = detect_league(team1, team2)
-    modifier = league_modifiers.get(league, {"avg_goals":2.5, "home_advantage":5})
-    s1 += modifier["home_advantage"]
+    mod = league_modifiers.get(league, {"avg_goals":2.5,"home_advantage":5})
+    s1 += mod["home_advantage"]
 
     total = s1 + s2
-    win1 = (s1/total)*100
-    win2 = (s2/total)*100
+    win1, win2 = (s1/total)*100, (s2/total)*100
     draw = 100 - (win1 + win2)
 
     if high_prob:
@@ -135,33 +135,28 @@ def predict_match(team1, team2, high_prob=False):
             if max_prob == win1:
                 win1 += diff
                 others = win2 + draw
-                win2 -= diff * (win2/others)
-                draw -= diff * (draw/others)
+                win2 -= diff*(win2/others)
+                draw -= diff*(draw/others)
             elif max_prob == win2:
                 win2 += diff
                 others = win1 + draw
-                win1 -= diff * (win1/others)
-                draw -= diff * (draw/others)
+                win1 -= diff*(win1/others)
+                draw -= diff*(draw/others)
             else:
                 draw += diff
                 others = win1 + win2
-                win1 -= diff * (win1/others)
-                win2 -= diff * (win2/others)
+                win1 -= diff*(win1/others)
+                win2 -= diff*(win2/others)
     win1, win2, draw = round(win1), round(win2), round(draw)
+    lambda1, lambda2 = s1/100*mod["avg_goals"], s2/100*mod["avg_goals"]
+    score1, score2 = poisson(lambda1), poisson(lambda2)
 
-    lambda1 = s1/100 * modifier["avg_goals"]
-    lambda2 = s2/100 * modifier["avg_goals"]
-    score1 = poisson(lambda1)
-    score2 = poisson(lambda2)
-
-    over25 = 60 + int((lambda1+lambda2-2)*10)
-    over25 = max(50, min(over25, 85))
-    btts = 50 + int(abs(lambda1-lambda2)*5)
-    btts = max(45, min(btts, 80))
-    double_chance = win1 + draw
+    over25 = max(50,min(85,60+int((lambda1+lambda2-2)*10)))
+    btts = max(45,min(80,50+int(abs(lambda1-lambda2)*5)))
+    double_chance = win1+draw
 
     return f"""
-⚽ MATCH ANALYSIS ({league.upper()})
+⚽ UMKHOMA MATCH ANALYSIS ({league.upper()})
 
 {team1} Win: {win1}%
 Draw: {draw}%
@@ -178,8 +173,24 @@ Most Likely Score:
 """
 
 # ------------------------------
-# LIVE FIXTURES FETCH (NO API KEY)
+# CACHE
 # ------------------------------
+fixtures_cache = {}
+odds_cache = {}
+
+# ------------------------------
+# LIVE FIXTURES (CACHED)
+# ------------------------------
+def fetch_live_fixtures_cached(league_slug):
+    now = time()
+    if league_slug in fixtures_cache:
+        t, data = fixtures_cache[league_slug]
+        if now - t < 600:
+            return data
+    data = fetch_live_fixtures(league_slug)
+    fixtures_cache[league_slug] = (now, data)
+    return data
+
 def fetch_live_fixtures(league_slug):
     try:
         url = f"https://api.sportdb.dev/api/football/{league_slug}/fixtures"
@@ -197,6 +208,43 @@ def fetch_live_fixtures(league_slug):
         return [f"Error fetching fixtures: {e}"]
 
 # ------------------------------
+# LIVE ODDS (CACHED)
+# ------------------------------
+def fetch_live_odds_cached(league, team1, team2):
+    now = time()
+    key = f"{league.lower()}_{team1.lower()}_{team2.lower()}"
+    if key in odds_cache:
+        t, data = odds_cache[key]
+        if now - t < 300:
+            return data
+    data = fetch_live_odds(league, team1, team2)
+    odds_cache[key] = (now,data)
+    return data
+
+def fetch_live_odds(league, team1, team2):
+    try:
+        url = f"https://{RAPIDAPI_HOST}/odds"
+        headers = {
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": RAPIDAPI_HOST
+        }
+        params = {"league": league.lower(), "team1": team1, "team2": team2}
+        response = requests.get(url, headers=headers, params=params)
+        data = response.json()
+        if data and "odds" in data and len(data["odds"])>0:
+            odds = data["odds"][0]
+            return f"📊 Live Odds ({team1} vs {team2}):\nHome Win: {odds.get('home')}\nDraw: {odds.get('draw')}\nAway Win: {odds.get('away')}"
+        return "⚠️ No odds found for this match."
+    except Exception as e:
+        return f"⚠️ Error fetching odds: {e}"
+
+# ------------------------------
+# UMKHOMA SIGNATURE
+# ------------------------------
+def umkhoma_signature(text):
+    return f"{text}\n\n— UMKHOMA 🤖"
+
+# ------------------------------
 # FLASK ENDPOINT
 # ------------------------------
 @app.route("/whatsapp", methods=["POST"])
@@ -206,27 +254,27 @@ def whatsapp():
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Admin command
+    # Admin generate voucher
     if user == ADMIN_NUMBER and incoming.lower() == "admin generate":
         code, expiry = create_voucher()
-        msg.body(f"🎟️ New Voucher Created\nCode: {code}\nExpires: {expiry}")
+        msg.body(umkhoma_signature(f"🎟️ New Voucher Created\nCode: {code}\nExpires: {expiry}"))
         return str(resp)
 
-    # Voucher check
+    # Voucher validation
     if user not in approved_users:
         result = validate_voucher(user, incoming)
         if result == "valid":
             approved_users[user] = True
-            msg.body("✅ Voucher accepted! You can now request matches or fixtures.")
+            msg.body(umkhoma_signature("✅ Voucher accepted! UMKHOMA at your service! You can now request matches or fixtures."))
             return str(resp)
         elif result == "expired":
-            msg.body("❌ Voucher expired.")
+            msg.body(umkhoma_signature("❌ Voucher expired."))
             return str(resp)
         elif result == "used":
-            msg.body("❌ Voucher already used.")
+            msg.body(umkhoma_signature("❌ Voucher already used."))
             return str(resp)
         else:
-            msg.body("🔐 Enter a valid voucher code to access predictions.")
+            msg.body(umkhoma_signature("🔐 Enter a valid voucher code to access UMKHOMA predictions."))
             return str(resp)
 
     # Fixtures request
@@ -234,39 +282,67 @@ def whatsapp():
         parts = incoming.split()
         if len(parts) == 2:
             league = parts[1].lower()
-            slug_map = {
-                "epl": "england/premier-league",
-                "la liga": "spain/laliga",
-                "serie a": "italy/serie-a",
-                "bundesliga": "germany/bundesliga",
-                "psl": "south-africa/psl"
-            }
+            slug_map = {"epl":"england/premier-league","la liga":"spain/laliga","serie a":"italy/serie-a","bundesliga":"germany/bundesliga","psl":"south-africa/psl"}
             slug = slug_map.get(league)
             if slug:
-                fixtures = fetch_live_fixtures(slug)
-                msg.body(f"📅 Upcoming {league.upper()} Fixtures:\n" + "\n".join(fixtures))
+                fixtures = fetch_live_fixtures_cached(slug)
+                msg.body(umkhoma_signature(f"📅 Upcoming {league.upper()} Fixtures:\n" + "\n".join(fixtures)))
             else:
-                msg.body("❌ League not found.")
+                msg.body(umkhoma_signature("❌ League not found."))
         else:
-            msg.body("Send like: fixtures EPL")
+            msg.body(umkhoma_signature("Send like: fixtures EPL"))
         return str(resp)
 
-    # High probability predictions
+    # High probability
     high_prob = False
     if incoming.lower().startswith("high probability"):
-        incoming = incoming.replace("high probability", "").strip()
+        incoming = incoming.replace("high probability","").strip()
         high_prob = True
 
-    # Match predictions
+    # Odds all
+    if incoming.lower() == "odds all":
+        all_odds_messages = []
+        leagues = {"EPL":"england/premier-league","La Liga":"spain/laliga","Serie A":"italy/serie-a","Bundesliga":"germany/bundesliga","PSL":"south-africa/psl"}
+        for league_name, slug in leagues.items():
+            fixtures = fetch_live_fixtures_cached(slug)
+            for match in fixtures[:3]:
+                try:
+                    team1, team2 = match.split(" vs ")[0], match.split(" vs ")[1].split(" (")[0]
+                    odds_text = fetch_live_odds_cached(league_name, team1, team2)
+                    all_odds_messages.append(f"{league_name} | {team1} vs {team2}\n{odds_text}")
+                except:
+                    all_odds_messages.append(f"{league_name} | Error fetching odds for match: {match}")
+        msg.body(umkhoma_signature("\n\n".join(all_odds_messages)))
+        return str(resp)
+
+    # Single match odds
+    if incoming.lower().startswith("odds"):
+        parts = incoming.split()
+        if len(parts) >= 4:
+            league = parts[1]
+            team1 = parts[2]
+            team2 = parts[4] if parts[3].lower()=="vs" else parts[3]
+            odds_text = fetch_live_odds_cached(league, team1, team2)
+            msg.body(umkhoma_signature(odds_text))
+        else:
+            msg.body(umkhoma_signature("Send like: odds EPL Arsenal vs Liverpool"))
+        return str(resp)
+
+    # Match prediction
     if "vs" in incoming.lower():
         teams_input = incoming.split("vs")
         if len(teams_input) == 2:
             result = predict_match(teams_input[0].strip(), teams_input[1].strip(), high_prob=high_prob)
-            msg.body(result)
+            msg.body(umkhoma_signature(result))
         else:
-            msg.body("❌ Invalid format. Send like: Arsenal vs Liverpool")
+            msg.body(umkhoma_signature("❌ Invalid format. Send like: Arsenal vs Liverpool"))
     else:
-        msg.body("Send a match like:\nArsenal vs Liverpool\nSundowns vs Pirates\nOr request fixtures:\nfixtures EPL")
+        msg.body(umkhoma_signature(
+            "Send a match like:\nArsenal vs Liverpool\nSundowns vs Pirates\n"
+            "Or request fixtures:\nfixtures EPL\n"
+            "Or odds:\nodds EPL Arsenal vs Liverpool\n"
+            "Or type: odds all\nUMKHOMA is here to help you with live predictions and betting insights!"
+        ))
 
     return str(resp)
 
