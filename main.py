@@ -10,8 +10,7 @@ app = Flask(__name__)
 # ------------------------------
 VOUCHER_FILE = "vouchers.json"
 approved_users = {}
-ADMIN_NUMBER = "whatsapp:+27611502312"  # Replace with your WhatsApp number
-SPORTDB_API_KEY = "curl -H "X-API-Key: YOUR_API_KEY" https://api.sportdb.dev/api/flashscore/Y"    # Replace with your SportDB.dev API Key
+ADMIN_NUMBER = "whatsapp:+27671502312"  # Replace with your WhatsApp number
 
 # ------------------------------
 # TEAM DATABASE
@@ -179,11 +178,11 @@ Most Likely Score:
 """
 
 # ------------------------------
-# LIVE FIXTURES FETCH
+# LIVE FIXTURES FETCH (NO API KEY)
 # ------------------------------
 def fetch_live_fixtures(league_slug):
     try:
-        url = f"https://api.sportdb.dev/api/football/{league_slug}/fixtures?api_key={SPORTDB_API_KEY}"
+        url = f"https://api.sportdb.dev/api/football/{league_slug}/fixtures"
         response = requests.get(url)
         data = response.json()
         fixtures = []
@@ -235,7 +234,6 @@ def whatsapp():
         parts = incoming.split()
         if len(parts) == 2:
             league = parts[1].lower()
-            # Map user input to SportDB slug
             slug_map = {
                 "epl": "england/premier-league",
                 "la liga": "spain/laliga",
