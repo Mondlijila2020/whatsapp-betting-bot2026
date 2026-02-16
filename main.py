@@ -13,11 +13,15 @@ app = Flask(__name__)
 FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")  # football-data.org token
 ADMIN_NUMBER = os.environ.get("ADMIN_NUMBER", "whatsapp:+27671502312")  # default if not set
 
+# ----------------------------
 # In-memory storage (can upgrade to DB later)
+# ----------------------------
 approved_users = {}  # {user_number: VIP_status}
 vouchers = {}        # {voucher_code: expiration_date}
 
+# ----------------------------
 # League codes
+# ----------------------------
 LEAGUES = {
     "EPL": "PL",
     "LALIGA": "PD",
@@ -61,7 +65,6 @@ def predict_match(team1, team2):
     p2 = round((s2 / total) * 100)
     draw = max(0, 100 - (p1 + p2))
 
-    # Personality + predictions
     reply = f"""
 🔥 UMKHOMA PRO ANALYSIS 🔥
 
@@ -139,8 +142,14 @@ def whatsapp():
     # ---------- PREDICTIONS ----------
     if "vs" in incoming.lower():
         try:
-            team1, team2 = incoming.split("vs")
-            msg.body(predict_match(team1.strip(), team2.strip()))
+            # Flexible splitting
+            parts = incoming.lower().split("vs")
+            if len(parts) >= 2:
+                team1 = parts[0].strip().title()
+                team2 = parts[1].strip().title()
+                msg.body(predict_match(team1, team2))
+            else:
+                msg.body("Send in format: Team1 vs Team2")
         except:
             msg.body("Send in format: Team1 vs Team2")
         return str(resp)
