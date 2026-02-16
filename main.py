@@ -14,7 +14,7 @@ FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")  # football-data.org token
 ADMIN_NUMBER = os.environ.get("ADMIN_NUMBER", "whatsapp:+27671502312")  # default if not set
 
 # ----------------------------
-# In-memory storage (can upgrade to DB later)
+# In-memory storage (upgrade to DB if needed)
 # ----------------------------
 approved_users = {}  # {user_number: VIP_status}
 vouchers = {}        # {voucher_code: expiration_date}
@@ -104,16 +104,22 @@ def get_fixtures(league):
 def whatsapp():
     incoming = request.values.get("Body", "").strip()
     user = request.values.get("From")
+    
+    # Debug: log incoming message
+    print(f"Incoming message from {user}: {incoming}")
+    
     resp = MessagingResponse()
     msg = resp.message()
 
+    text = incoming.strip().lower()
+
     # ---------- ADMIN COMMANDS ----------
     if user == ADMIN_NUMBER:
-        if incoming.lower() == "admin generate":
+        if text == "admin generate":
             code, exp = generate_voucher()
             msg.body(f"🎟️ New Voucher Created\nCode: {code}\nExpires: {exp}\n— UMKHOMA 🤖")
             return str(resp)
-        if incoming.lower() == "admin list":
+        if text == "admin list":
             msg.body("Current vouchers:\n" + "\n".join([f"{c} -> {d}" for c,d in vouchers.items()]))
             return str(resp)
 
@@ -130,28 +136,28 @@ def whatsapp():
         return str(resp)
 
     # ---------- FIXTURES ----------
-    if incoming.lower().startswith("fixtures"):
-        parts = incoming.split()
-        if len(parts) > 1:
-            league = parts[1]
+    if text.startswith("fixtures"):
+        parts = text.split()
+        league = parts[1].upper() if len(parts) > 1 else None
+        if league:
             msg.body(get_fixtures(league))
         else:
             msg.body("Usage: fixtures EPL")
         return str(resp)
 
     # ---------- PREDICTIONS ----------
-    if "vs" in incoming.lower():
+    if "vs" in text:
         try:
-            # Flexible splitting
-            parts = incoming.lower().split("vs")
+            # split safely
+            parts = text.split("vs")
             if len(parts) >= 2:
                 team1 = parts[0].strip().title()
                 team2 = parts[1].strip().title()
                 msg.body(predict_match(team1, team2))
             else:
                 msg.body("Send in format: Team1 vs Team2")
-        except:
-            msg.body("Send in format: Team1 vs Team2")
+        except Exception as e:
+            msg.body(f"Send in format: Team1 vs Team2\nError: {str(e)}")
         return str(resp)
 
     # ---------- DEFAULT HELP ----------
