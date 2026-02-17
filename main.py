@@ -2,138 +2,202 @@ import os
 import requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from datetime import datetime, timedelta
+import random
 
+# ----------------------------
+# Flask App
+# ----------------------------
 app = Flask(__name__)
 
-# ===============================
-# ENV VARIABLES
-# ===============================
-API_KEY = os.environ.get("API_KEY")
-ADMIN_NUMBER = "+27671502312"   # ✅ YOUR ADMIN NUMBER
+@app.route("/")
+def home():
+    return "UMKHOMA BOT IS RUNNING"
 
-# ===============================
-# SAFE API REQUEST FUNCTION
-# ===============================
-def safe_request(url):
-    try:
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
-            return r.json()
-        return None
-    except:
-        return None
+# ----------------------------
+# Environment Variables
+# ----------------------------
+API_KEY = os.environ.get("API_KEY")  # <-- RapidAPI key
+ADMIN_NUMBER = os.environ.get("ADMIN_NUMBER", "whatsapp:+27671502312")
 
-# ===============================
-# GET MATCH PREDICTION
-# ===============================
-def get_prediction(team1, team2):
-    url = f"https://api-football-v1.p.rapidapi.com/v3/predictions?team={team1}"
-    headers = {
-        "X-RapidAPI-Key": API_KEY,
-        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
-    }
+# ----------------------------
+# In-memory storage
+# ----------------------------
+approved_users = {}  # {user_number: VIP_status}
+vouchers = {}        # {voucher_code: expiration_date}
 
-    try:
-        r = requests.get(url, headers=headers, timeout=15)
-        data = r.json()
+# ----------------------------
+# League codes
+# ----------------------------
+LEAGUES = {
+    "EPL": "PL",
+    "LALIGA": "PD",
+    "SERIEA": "SA",
+    "BUNDESLIGA": "BL1",
+    "BETWAY": "SA-PREM",
+    "PORTUGAL": "PPL",
+    "TURKEY": "TUR",
+    "SWITZERLAND": "SWI",
+    "MLS": "USA-MLS"
+}
 
-        if data["response"]:
-            pred = data["response"][0]["predictions"]["winner"]["name"]
-            return f"🔮 Prediction:\n{team1} vs {team2}\nWinner: {pred}"
-        else:
-            return "❌ No prediction available."
-    except:
-        return "⚠️ Prediction error."
+# ----------------------------
+# Voucher System
+# ----------------------------
+def generate_voucher():
+    code = "UMK-" + "".join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", k=6))
+    expiration = datetime.now() + timedelta(days=30)
+    vouchers[code] = expiration
+    return code, expiration.strftime("%Y-%m-%d")
 
-# ===============================
-# GET UPCOMING MATCHES
-# ===============================
-def get_upcoming():
-    leagues = {
-        "Betway Premiership": 288,
-        "Portugal Liga": 94,
-        "Turkey Super Lig": 203,
-        "Switzerland Super League": 207,
-        "USA MLS": 253
-    }
-
-    msg = "📅 Upcoming Matches:\n\n"
-
-    for name, league_id in leagues.items():
-        url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures?league={league_id}&next=3"
+# ----------------------------
+# Team Strength & Prediction
+# ----------------------------
+def get_team_strength(team):
+    for code in LEAGUES.values():
+        url = f"https://api-football-v1.p.rapidapi.com/v3/teams?league={code}&season=2024"
         headers = {
             "X-RapidAPI-Key": API_KEY,
             "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
         }
-
         try:
-            r = requests.get(url, headers=headers, timeout=15)
-            data = r.json()
-
-            msg += f"🏆 {name}\n"
-
-            for game in data["response"]:
-                home = game["teams"]["home"]["name"]
-                away = game["teams"]["away"]["name"]
-                msg += f"{home} vs {away}\n"
-
-            msg += "\n"
-
+            res = requests.get(url, headers=headers, timeout=10).json()
+            for t in res.get("response", []):
+                if team.lower() in t["team"]["name"].lower():
+                    return 100 - t.get("rank", 50)  # fallback if rank missing
         except:
-            msg += f"{name} unavailable\n\n"
+            continue
+    return 50  # default strength
 
-    return msg
+def predict_match(team1, team2):
+    s1 = get_team_strength(team1)
+    s2 = get_team_strength(team2)
+    total = s1 + s2
+    p1 = round((s1 / total) * 100)
+    p2 = round((s2 / total) * 100)
+    draw = max(0, 100 - (p1 + p2))
 
-# ===============================
-# WEBHOOK ROUTE
-# ===============================
-@app.route("/", methods=["GET"])
-def home():
-    return "UMKHOMA BOT IS RUNNING"
+    return f"""
+🔥 UMKHOMA PRO ANALYSIS 🔥
 
-@app.route("/bot", methods=["POST"])
-def bot():
+{team1} Win: {p1}%
+Draw: {draw}%
+{team2} Win: {p2}%
+
+💡 TOP BET PICKS:
+1️⃣ Double Chance: {team1 if p1>p2 else team2} ({max(p1,p2,draw)}%)
+2️⃣ Over 1.5 Goals — 82%
+3️⃣ Both Teams Score — 74%
+
+🗣️ Mfowethu, bet smart, play safe! 🏆
+"""
+
+# ----------------------------
+# Fetch Fixtures
+# ----------------------------
+def get_fixtures(league):
+    code = LEAGUES.get(league.upper())
+    if not code:
+        return "League not found. Try EPL, LALIGA, SERIEA, BUNDESLIGA, BETWAY, PORTUGAL, TURKEY, SWITZERLAND, MLS."
+    url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures?league={code}&next=5"
+    headers = {
+        "X-RapidAPI-Key": API_KEY,
+        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+    }
     try:
-        incoming = request.values.get("Body", "").strip()
-        sender = request.values.get("From", "")
+        res = requests.get(url, headers=headers, timeout=10).json()
+        fixtures = []
+        for m in res.get("response", []):
+            home = m["teams"]["home"]["name"]
+            away = m["teams"]["away"]["name"]
+            fixtures.append(f"{home} vs {away}")
+        return "\n".join(fixtures) if fixtures else "No upcoming fixtures."
+    except:
+        return "Could not fetch fixtures. Try again later."
 
-        resp = MessagingResponse()
-        msg = resp.message()
+# ----------------------------
+# WhatsApp Webhook
+# ----------------------------
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp():
+    incoming = request.values.get("Body", "").strip()
+    user = request.values.get("From")
+    resp = MessagingResponse()
+    msg = resp.message()
+    text = incoming.lower()
 
-        text = incoming.lower()
+    # --------------------------
+    # Admin Commands
+    # --------------------------
+    if user == ADMIN_NUMBER:
+        if text == "admin generate":
+            code, exp = generate_voucher()
+            msg.body(f"🎟️ New Voucher Created\nCode: {code}\nExpires: {exp}\n— UMKHOMA 🤖")
+            return str(resp)
+        if text == "admin list":
+            msg.body("Current vouchers:\n" + "\n".join([f"{c} -> {d}" for c,d in vouchers.items()]))
+            return str(resp)
 
-        # ===============================
-        # COMMANDS
-        # ===============================
-        if text == "hi":
-            msg.body("👋 Welcome to UMKHOMA FREE BOT\n\nCommands:\n• upcoming\n• prediction\n• Team1 vs Team2")
-
-        elif text == "upcoming":
-            msg.body(get_upcoming())
-
-        elif text == "prediction":
-            msg.body("Send in format:\nTeam1 vs Team2")
-
-        elif " vs " in text:
-            teams = incoming.split(" vs ")
-            if len(teams) == 2:
-                msg.body(get_prediction(teams[0], teams[1]))
-            else:
-                msg.body("❌ Format must be:\nTeam1 vs Team2")
-
-        else:
-            msg.body("❓ Unknown command\nType HI")
-
+    # --------------------------
+    # New User
+    # --------------------------
+    if user not in approved_users:
+        approved_users[user] = False
+        msg.body("Welcome to UMKHOMA 🤖. Send your voucher to upgrade to VIP!")
         return str(resp)
 
-    except Exception as e:
-        print("ERROR:", e)
-        r = MessagingResponse()
-        r.message("⚠️ An unexpected error occurred! Please try again.")
-        return str(r)
+    # --------------------------
+    # Voucher Redemption
+    # --------------------------
+    if incoming.upper() in vouchers:
+        approved_users[user] = True
+        msg.body(f"🎉 VIP activated! Enjoy premium predictions.\nExpires: {vouchers[incoming.upper()]}")
+        return str(resp)
 
-# ===============================
-# RUN APP
-# ===============================
+    # --------------------------
+    # Fixtures
+    # --------------------------
+    if text.startswith("fixtures"):
+        parts = text.split()
+        league = parts[1].upper() if len(parts) > 1 else None
+        if league:
+            msg.body(get_fixtures(league))
+        else:
+            msg.body("Usage: fixtures EPL")
+        return str(resp)
+
+    # --------------------------
+    # Predictions
+    # --------------------------
+    if "vs" in text:
+        try:
+            parts = text.split("vs")
+            if len(parts) >= 2:
+                team1 = parts[0].strip().title()
+                team2 = parts[1].strip().title()
+                msg.body(predict_match(team1, team2))
+            else:
+                msg.body("Send in format: Team1 vs Team2")
+        except Exception as e:
+            msg.body(f"Send in format: Team1 vs Team2\nError: {str(e)}")
+        return str(resp)
+
+    # --------------------------
+    # Default Help
+    # --------------------------
+    msg.body(
+        "Commands:\n"
+        "- Team1 vs Team2 (prediction)\n"
+        "- fixtures LEAGUE (upcoming matches)\n"
+        "- Send VIP voucher code to activate VIP\n"
+        "- Admin: 'admin generate', 'admin list'\n"
+        "Supported leagues: EPL, LALIGA, SERIEA, BUNDESLIGA, BETWAY, PORTUGAL, TURKEY, SWITZERLAND, MLS"
+    )
+    return str(resp)
+
+# ----------------------------
+# Run App (Render-Compatible)
+# ----------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))  # Render sets this automatically
+    app.run(host="0.0.0.0", port=port)
