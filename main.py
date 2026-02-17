@@ -10,8 +10,8 @@ app = Flask(__name__)
 # ----------------------------
 # ENVIRONMENT VARIABLES
 # ----------------------------
-FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")  # football-data.org token
-ADMIN_NUMBER = os.environ.get("ADMIN_NUMBER", "whatsapp:+27671502312")  # default if not set
+FOOTBALL_API_KEY = os.environ.get("b48a24d06c2c4b42a4aa56d12e9a6199")
+ADMIN_NUMBER = os.environ.get("ADMIN_NUMBER", "whatsapp:+27671502312")
 
 # ----------------------------
 # In-memory storage (upgrade to DB if needed)
@@ -20,13 +20,18 @@ approved_users = {}  # {user_number: VIP_status}
 vouchers = {}        # {voucher_code: expiration_date}
 
 # ----------------------------
-# League codes
+# League codes (must match your API)
 # ----------------------------
 LEAGUES = {
     "EPL": "PL",
     "LALIGA": "PD",
     "SERIEA": "SA",
-    "BUNDESLIGA": "BL1"
+    "BUNDESLIGA": "BL1",
+    "BETWAY": "SA-PREM",
+    "PORTUGAL": "PPL",
+    "TURKEY": "TUR",
+    "SWITZERLAND": "SWI",
+    "MLS": "USA-MLS"
 }
 
 # ----------------------------
@@ -44,15 +49,16 @@ def generate_voucher():
 def get_team_strength(team):
     for code in LEAGUES.values():
         url = f"https://api.football-data.org/v4/competitions/{code}/standings"
-        res = requests.get(url, headers={"X-Auth-Token": FOOTBALL_API_KEY})
-        if res.status_code != 200:
+        try:
+            res = requests.get(url, headers={"X-Auth-Token": FOOTBALL_API_KEY}, timeout=10)
+            data = res.json()
+            for table in data.get("standings", []):
+                for t in table.get("table", []):
+                    if team.lower() in t["team"]["name"].lower():
+                        return 100 - t["position"]
+        except:
             continue
-        data = res.json()
-        for table in data.get("standings", []):
-            for t in table.get("table", []):
-                if team.lower() in t["team"]["name"].lower():
-                    return 100 - t["position"]
-    return 50  # default strength
+    return 50  # default strength if not found
 
 # ----------------------------
 # Prediction Engine
@@ -65,7 +71,7 @@ def predict_match(team1, team2):
     p2 = round((s2 / total) * 100)
     draw = max(0, 100 - (p1 + p2))
 
-    reply = f"""
+    return f"""
 🔥 UMKHOMA PRO ANALYSIS 🔥
 
 {team1} Win: {p1}%
@@ -79,7 +85,6 @@ Draw: {draw}%
 
 🗣️ Mfowethu, bet smart, play safe! 🏆
 """
-    return reply
 
 # ----------------------------
 # Fetch Fixtures
@@ -87,15 +92,16 @@ Draw: {draw}%
 def get_fixtures(league):
     code = LEAGUES.get(league.upper())
     if not code:
-        return "League not found. Try EPL, LALIGA, SERIEA, or BUNDESLIGA."
+        return "League not found. Try EPL, LALIGA, SERIEA, BUNDESLIGA, BETWAY, PORTUGAL, TURKEY, SWITZERLAND, MLS."
     url = f"https://api.football-data.org/v4/competitions/{code}/matches?status=SCHEDULED"
-    res = requests.get(url, headers={"X-Auth-Token": FOOTBALL_API_KEY})
-    if res.status_code != 200:
+    try:
+        res = requests.get(url, headers={"X-Auth-Token": FOOTBALL_API_KEY}, timeout=10)
+        fixtures = []
+        for m in res.json().get("matches", [])[:10]:
+            fixtures.append(f"{m['homeTeam']['name']} vs {m['awayTeam']['name']}")
+        return "\n".join(fixtures) if fixtures else "No upcoming fixtures."
+    except:
         return "Could not fetch fixtures. Try again later."
-    fixtures = []
-    for m in res.json().get("matches", [])[:10]:
-        fixtures.append(f"{m['homeTeam']['name']} vs {m['awayTeam']['name']}")
-    return "\n".join(fixtures) if fixtures else "No upcoming fixtures."
 
 # ----------------------------
 # WhatsApp Endpoint
@@ -104,14 +110,11 @@ def get_fixtures(league):
 def whatsapp():
     incoming = request.values.get("Body", "").strip()
     user = request.values.get("From")
-    
-    # Debug: log incoming message
-    print(f"Incoming message from {user}: {incoming}")
-    
+    print(f"[DEBUG] Incoming from {user}: {incoming}")  # logs for debugging
     resp = MessagingResponse()
     msg = resp.message()
 
-    text = incoming.strip().lower()
+    text = incoming.lower().strip()
 
     # ---------- ADMIN COMMANDS ----------
     if user == ADMIN_NUMBER:
@@ -125,7 +128,7 @@ def whatsapp():
 
     # ---------- NEW USER ----------
     if user not in approved_users:
-        approved_users[user] = False  # default FREE user
+        approved_users[user] = False
         msg.body("Welcome to UMKHOMA 🤖. Send your voucher to upgrade to VIP!")
         return str(resp)
 
@@ -148,7 +151,6 @@ def whatsapp():
     # ---------- PREDICTIONS ----------
     if "vs" in text:
         try:
-            # split safely
             parts = text.split("vs")
             if len(parts) >= 2:
                 team1 = parts[0].strip().title()
@@ -163,13 +165,17 @@ def whatsapp():
     # ---------- DEFAULT HELP ----------
     msg.body(
         "Commands:\n"
-        "- Arsenal vs Liverpool (prediction)\n"
-        "- fixtures EPL (upcoming matches)\n"
+        "- Team1 vs Team2 (prediction)\n"
+        "- fixtures LEAGUE (upcoming matches)\n"
         "- Send VIP voucher code to activate VIP\n"
-        "- Admin: 'admin generate', 'admin list'"
+        "- Admin: 'admin generate', 'admin list'\n"
+        "Supported leagues: EPL, LALIGA, SERIEA, BUNDESLIGA, BETWAY, PORTUGAL, TURKEY, SWITZERLAND, MLS"
     )
     return str(resp)
 
 # ----------------------------
+# RUN APP (Render-Compatible)
+# ----------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    port = int(os.environ.get("PORT", 8080))  # Render sets this automatically
+    app.run(host="0.0.0.0", port=port)
